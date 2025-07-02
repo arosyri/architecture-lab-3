@@ -1,3 +1,4 @@
+![CI](https://github.com/arosyri/architecture-lab-3/actions/workflows/go.yml/badge.svg)
 # Painter — графічний HTTP-сервер на Go
 
 Проєкт реалізує простий графічний сервер з веб-інтерфейсом, який приймає команди через HTTP та малює фігури і фон у вікні.
