@@ -1,6 +1,7 @@
 package main
 
 import (
+	"image"
 	"net/http"
 
 	"github.com/roman-mazur/architecture-lab-3/painter"
@@ -10,18 +11,19 @@ import (
 
 func main() {
 	var (
-		pv ui.Visualizer // Візуалізатор створює вікно та малює у ньому.
-
-		// Потрібні для частини 2.
-		opLoop painter.Loop // Цикл обробки команд.
-		parser lang.Parser  // Парсер команд.
+		pv     ui.Visualizer
+		opLoop painter.Loop
+		parser lang.Parser
 	)
 
-	//pv.Debug = true
 	pv.Title = "Simple painter"
-
 	pv.OnScreenReady = opLoop.Start
 	opLoop.Receiver = &pv
+
+	pv.OnMove = func(p image.Point) {
+		opLoop.Post(painter.Move{NewPos: p})
+		opLoop.Post(painter.UpdateOp)
+	}
 
 	go func() {
 		http.Handle("/", lang.HttpHandler(&opLoop, &parser))

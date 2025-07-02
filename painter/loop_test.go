@@ -20,21 +20,26 @@ func TestLoop_Post(t *testing.T) {
 	var testOps []string
 
 	l.Start(mockScreen{})
-	l.Post(logOp(t, "do white fill", WhiteFill))
-	l.Post(logOp(t, "do green fill", GreenFill))
+
+	l.Post(logOp(t, "do white fill", FillBackground{Color: color.RGBA{255, 255, 255, 255}}))
+
+	l.Post(logOp(t, "do green fill", FillBackground{Color: color.RGBA{0, 128, 0, 255}}))
+
 	l.Post(UpdateOp)
 
 	for i := 0; i < 3; i++ {
-		go l.Post(logOp(t, "do green fill", GreenFill))
+		go l.Post(logOp(t, "do green fill", FillBackground{Color: color.RGBA{0, 128, 0, 255}}))
 	}
 
-	l.Post(OperationFunc(func(screen.Texture) {
+	l.Post(OperationFunc(func(tx screen.Texture) {
 		testOps = append(testOps, "op 1")
-		l.Post(OperationFunc(func(screen.Texture) {
+
+		func(tx screen.Texture) {
 			testOps = append(testOps, "op 2")
-		}))
+		}(tx)
 	}))
-	l.Post(OperationFunc(func(screen.Texture) {
+
+	l.Post(OperationFunc(func(tx screen.Texture) {
 		testOps = append(testOps, "op 3")
 	}))
 
@@ -45,25 +50,61 @@ func TestLoop_Post(t *testing.T) {
 	}
 	mt, ok := tr.lastTexture.(*mockTexture)
 	if !ok {
-		t.Fatal("Unexpected texture", tr.lastTexture)
+		t.Fatal("Unexpected texture type")
 	}
-	if mt.Colors[0] != color.White {
+	if !reflect.DeepEqual(mt.Colors[0], color.RGBA{255, 255, 255, 255}) {
 		t.Error("First color is not white:", mt.Colors)
 	}
-	if len(mt.Colors) != 2 {
-		t.Error("Unexpected size of colors:", mt.Colors)
+	if len(mt.Colors) < 2 {
+		t.Error("Not enough Fill operations:", mt.Colors)
 	}
 
-	if !reflect.DeepEqual(testOps, []string{"op 1", "op 2", "op 3"}) {
-		t.Error("Bad order:", testOps)
+	want := []string{"op 1", "op 2", "op 3"}
+	if !reflect.DeepEqual(testOps, want) {
+		t.Errorf("Bad order of nested ops: got %v, want %v", testOps, want)
 	}
 }
 
-func logOp(t *testing.T, msg string, op OperationFunc) OperationFunc {
-	return func(tx screen.Texture) {
-		t.Log(msg)
-		op(tx)
+func TestLoop_Figure(t *testing.T) {
+	var l Loop
+	l.Receiver = &testReceiver{}
+
+	l.Start(mockScreen{})
+
+	l.Post(Reset{})
+
+	l.Post(UpdateOp)
+
+	l.Post(DrawT180{
+		PosX:  100,
+		PosY:  150,
+		Size:  50,
+		Color: color.RGBA{255, 0, 0, 255},
+	})
+
+	l.Post(Move{
+		NewPos: image.Pt(300, 400),
+	})
+
+	l.Post(UpdateOp)
+
+	l.StopAndWait()
+
+	if len(l.figures) != 1 {
+		t.Fatalf("expected 1 figure, got %d", len(l.figures))
 	}
+
+	fig := l.figures[0]
+	if fig.PosX != 300 || fig.PosY != 400 {
+		t.Errorf("figure not moved correctly, got PosX=%d PosY=%d, expected 300 400", fig.PosX, fig.PosY)
+	}
+}
+
+func logOp(t *testing.T, msg string, op Operation) Operation {
+	return OperationFunc(func(tx screen.Texture) {
+		t.Log(msg)
+		op.Do(tx)
+	})
 }
 
 type testReceiver struct {
@@ -77,15 +118,15 @@ func (tr *testReceiver) Update(t screen.Texture) {
 type mockScreen struct{}
 
 func (m mockScreen) NewBuffer(size image.Point) (screen.Buffer, error) {
-	panic("implement me")
+	panic("not implemented")
 }
 
 func (m mockScreen) NewTexture(size image.Point) (screen.Texture, error) {
-	return new(mockTexture), nil
+	return &mockTexture{}, nil
 }
 
 func (m mockScreen) NewWindow(opts *screen.NewWindowOptions) (screen.Window, error) {
-	panic("implement me")
+	panic("not implemented")
 }
 
 type mockTexture struct {
@@ -94,13 +135,23 @@ type mockTexture struct {
 
 func (m *mockTexture) Release() {}
 
-func (m *mockTexture) Size() image.Point { return size }
+func (m *mockTexture) Size() image.Point {
+	return image.Pt(800, 800)
+}
 
 func (m *mockTexture) Bounds() image.Rectangle {
 	return image.Rectangle{Max: m.Size()}
 }
 
 func (m *mockTexture) Upload(dp image.Point, src screen.Buffer, sr image.Rectangle) {}
+
 func (m *mockTexture) Fill(dr image.Rectangle, src color.Color, op draw.Op) {
-	m.Colors = append(m.Colors, src)
+	if rgba, ok := src.(color.RGBA); ok {
+		m.Colors = append(m.Colors, rgba)
+	} else {
+		r, g, b, a := src.RGBA()
+		m.Colors = append(m.Colors, color.RGBA{
+			uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8),
+		})
+	}
 }

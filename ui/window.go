@@ -4,6 +4,7 @@ import (
 	"image"
 	"image/color"
 	"log"
+	"sync"
 
 	"golang.org/x/exp/shiny/driver"
 	"golang.org/x/exp/shiny/imageutil"
@@ -25,46 +26,61 @@ type Visualizer struct {
 	tx   chan screen.Texture
 	done chan struct{}
 
-	sz  size.Event
-	pos image.Rectangle
+	sz size.Event
+	mu sync.Mutex
+
+	bgColor    color.Color
+	figurePos  image.Point
+	figureSize int
+
+	currentTexture screen.Texture
+
+	OnMove func(p image.Point)
 }
 
-func (pw *Visualizer) Main() {
-	pw.tx = make(chan screen.Texture)
-	pw.done = make(chan struct{})
-	pw.pos.Max.X = 200
-	pw.pos.Max.Y = 200
-	driver.Main(pw.run)
+func (v *Visualizer) Update(t screen.Texture) {
+	log.Println("Visualizer: received texture update")
+	v.mu.Lock()
+	v.currentTexture = t
+	v.mu.Unlock()
+
+	v.tx <- t
 }
 
-func (pw *Visualizer) Update(t screen.Texture) {
-	pw.tx <- t
+func (v *Visualizer) Main() {
+	v.tx = make(chan screen.Texture)
+	v.done = make(chan struct{})
+	driver.Main(v.run)
 }
 
-func (pw *Visualizer) run(s screen.Screen) {
+func (v *Visualizer) run(s screen.Screen) {
 	w, err := s.NewWindow(&screen.NewWindowOptions{
-		Title: pw.Title,
+		Title:  v.Title,
+		Width:  800,
+		Height: 800,
 	})
 	if err != nil {
-		log.Fatal("Failed to initialize the app window:", err)
+		log.Fatal("Failed to create window:", err)
 	}
 	defer func() {
 		w.Release()
-		close(pw.done)
+		close(v.done)
 	}()
 
-	if pw.OnScreenReady != nil {
-		pw.OnScreenReady(s)
+	v.w = w
+	v.bgColor = color.RGBA{0, 128, 0, 255}
+	v.figureSize = 200
+	v.figurePos = image.Point{X: 400, Y: 400}
+	if v.OnScreenReady != nil {
+		v.OnScreenReady(s)
 	}
-
-	pw.w = w
 
 	events := make(chan any)
 	go func() {
 		for {
 			e := w.NextEvent()
-			if pw.Debug {
-				log.Printf("new event: %v", e)
+			if v.Debug {
+				log.Printf("event: %v", e)
 			}
 			if detectTerminate(e) {
 				close(events)
@@ -82,9 +98,9 @@ func (pw *Visualizer) run(s screen.Screen) {
 			if !ok {
 				return
 			}
-			pw.handleEvent(e, t)
+			v.handleEvent(e, t)
 
-		case t = <-pw.tx:
+		case t = <-v.tx:
 			w.Send(paint.Event{})
 		}
 	}
@@ -93,50 +109,72 @@ func (pw *Visualizer) run(s screen.Screen) {
 func detectTerminate(e any) bool {
 	switch e := e.(type) {
 	case lifecycle.Event:
-		if e.To == lifecycle.StageDead {
-			return true // Window destroy initiated.
-		}
+		return e.To == lifecycle.StageDead
 	case key.Event:
-		if e.Code == key.CodeEscape {
-			return true // Esc pressed.
-		}
+		return e.Code == key.CodeEscape
 	}
 	return false
 }
 
-func (pw *Visualizer) handleEvent(e any, t screen.Texture) {
+func (v *Visualizer) handleEvent(e any, t screen.Texture) {
 	switch e := e.(type) {
-
-	case size.Event: // Оновлення даних про розмір вікна.
-		pw.sz = e
+	case size.Event:
+		v.sz = e
 
 	case error:
-		log.Printf("ERROR: %s", e)
+		log.Printf("ERROR: %v", e)
 
 	case mouse.Event:
-		if t == nil {
-			// TODO: Реалізувати реакцію на натискання кнопки миші.
+		if e.Button == mouse.ButtonLeft && e.Direction == mouse.DirPress {
+			if v.OnMove != nil {
+				v.OnMove(image.Point{X: int(e.X), Y: int(e.Y)})
+			}
+			v.mu.Lock()
+			v.figurePos = image.Point{X: int(e.X), Y: int(e.Y)}
+			v.mu.Unlock()
+			v.w.Send(paint.Event{})
 		}
 
 	case paint.Event:
-		// Малювання контенту вікна.
-		if t == nil {
-			pw.drawDefaultUI()
+		v.mu.Lock()
+		defer v.mu.Unlock()
+
+		if v.currentTexture == nil {
+			v.drawScene()
 		} else {
-			// Використання текстури отриманої через виклик Update.
-			pw.w.Scale(pw.sz.Bounds(), t, t.Bounds(), draw.Src, nil)
+			v.w.Scale(v.sz.Bounds(), v.currentTexture, v.currentTexture.Bounds(), draw.Src, nil)
 		}
-		pw.w.Publish()
+		v.w.Publish()
 	}
 }
 
-func (pw *Visualizer) drawDefaultUI() {
-	pw.w.Fill(pw.sz.Bounds(), color.Black, draw.Src) // Фон.
+func (v *Visualizer) drawScene() {
+	v.w.Fill(v.sz.Bounds(), v.bgColor, draw.Src)
 
-	// TODO: Змінити колір фону та додати відображення фігури у вашому варіанті.
+	v.drawT180(v.figurePos, v.figureSize)
 
-	// Малювання білої рамки.
-	for _, br := range imageutil.Border(pw.sz.Bounds(), 10) {
-		pw.w.Fill(br, color.White, draw.Src)
+	for _, br := range imageutil.Border(v.sz.Bounds(), 10) {
+		v.w.Fill(br, color.White, draw.Src)
 	}
+}
+
+func (v *Visualizer) drawT180(center image.Point, size int) {
+	thickness := size / 5
+	half := size / 2
+
+	horzRect := image.Rect(
+		center.X-half,
+		center.Y-thickness/2,
+		center.X+half,
+		center.Y+thickness/2,
+	)
+	vertRect := image.Rect(
+		center.X-thickness/2,
+		center.Y-thickness/2,
+		center.X+thickness/2,
+		center.Y-half,
+	)
+
+	v.w.Fill(horzRect, color.RGBA{255, 255, 0, 255}, draw.Src)
+	v.w.Fill(vertRect, color.RGBA{255, 255, 0, 255}, draw.Src)
 }

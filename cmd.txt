@@ -1,0 +1,7 @@
+white
+border green
+bgrect 0.25 0.25 0.75 0.75
+figure 400 400
+move 500 500
+figure 420 420
+update
